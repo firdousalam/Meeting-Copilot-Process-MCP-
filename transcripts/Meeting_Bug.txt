@@ -1,0 +1,29 @@
+Transcript – MCP Development Sync
+Date: September 27, 2026
+Duration: 50 minutes
+
+[00:01] Technophile Firdous (Host, Project Manager): Thanks everyone for joining. Let’s start with a quick status update. How’s the work going?
+
+[00:03] Developer 1 (Firdous Alam): I’ve completed the initial integration of the Ollama API. I’ll finish testing by Wednesday.
+
+[00:05] Developer 2 (Firdous Alam – ymail): I’m working on the email notification module. I’ll need another two days to finalize error handling.
+
+[00:07] Developer 3 (Tech Firdous Alam): I’ve started on the Jira issue creation logic. I’ll complete the draft implementation by Friday.
+
+[00:10] Host (Technophile Firdous): Great progress. Now, I want to explain the RBAC (Role-Based Access Control) feature. We need to manage permissions so only authorized users can trigger MCP actions. This will be a major epic in Jira.
+
+[00:12] Host: Developer 1, please create an **Epic** in Jira titled “Implement RBAC for MCP” and assign it to yourself. The deadline is **October 15, 2026**.
+
+[00:15] Host: Under this epic, create 4 tasks:
+- Task 1: Design RBAC schema (assigned to Developer 2).
+- Task 2: Implement role validation middleware (assigned to Developer 2).
+- Task 3: Integrate RBAC checks into transcript processing (assigned to Developer 3).
+- Task 4: Add RBAC enforcement in email + Jira modules (assigned to Developer 3).
+
+[00:20] Host: Each task should be estimated with story points based on complexity. Since the epic deadline is October 15, distribute points accordingly:
+- Epic: 13 points
+- Each task: 3–5 points depending on workload.
+
+[00:25] Host: Please update Jira with these assignments today so we can track progress.
+
+[00:30] Meeting Adjourned.
