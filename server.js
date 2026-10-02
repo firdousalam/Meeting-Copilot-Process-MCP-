@@ -1,38 +1,43 @@
-require("dotenv").config(); // load environment variables from .env
+import dotenv from "dotenv";
+import fs from "node:fs";
+import nodemailer from "nodemailer";
+import JiraClient from "jira-client";
+import { fileURLToPath } from "node:url";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
 
-const express = require("express");
-const multer = require("multer");
-const fs = require("fs");
-const nodemailer = require("nodemailer");
-const JiraClient = require("jira-client");
+const projectRoot = fileURLToPath(new URL("./", import.meta.url));
+dotenv.config({ path: `${projectRoot}.env` });
 
-const app = express();
-const upload = multer({ dest: "transcripts/" });
+const participants = JSON.parse(
+    fs.readFileSync(new URL("./participants.json", import.meta.url), "utf8")
+);
 
-// --- Load participant mapping ---
-const participants = JSON.parse(fs.readFileSync("participants.json", "utf8"));
-console.log("Loaded participants mapping:", participants);
-
-// --- Configure Nodemailer ---
 const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT, 10),
+    port: Number.parseInt(process.env.SMTP_PORT || "587", 10),
     secure: false,
     auth: {
         user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS
+        pass: process.env.SMTP_PASS,
     },
-    requireTLS: true
+    requireTLS: true,
 });
 
-// --- Configure Jira Client ---
 const jira = new JiraClient({
     protocol: "https",
     host: process.env.JIRA_HOST,
     username: process.env.JIRA_USER,
-    password: process.env.JIRA_PASS, // or API token
+    password: process.env.JIRA_PASS,
     apiVersion: "2",
-    strictSSL: true
+    strictSSL: true,
+});
+
+const taskSchema = z.object({
+    assignee: z.string(),
+    task: z.string(),
+    due_date: z.string(),
 });
 
 function formatJiraDate(dateString) {
@@ -45,177 +50,271 @@ function formatJiraDate(dateString) {
     return date.toISOString().slice(0, 10);
 }
 
-// --- Upload transcript ---
-app.post("/upload", upload.single("transcript"), async (req, res) => {
-    const filePath = req.file.path;
-    console.log(`Received file: ${filePath}`);
-    const transcript = fs.readFileSync(filePath, "utf8");
-    console.log(`Received transcript: ${transcript.substring(0, 100)}...`);
+function normalizeOllamaText(rawText) {
+    if (!rawText) return "";
+
+    const cleaned = rawText
+        .replace(/```json/gi, "")
+        .replace(/```/g, "")
+        .trim();
+
+    if (!cleaned) return "";
+
+    const lines = cleaned.split(/\r?\n/).filter((line) => line.trim());
+    let fullText = "";
+
+    for (const line of lines) {
+        try {
+            const parsed = JSON.parse(line);
+            if (parsed?.response) {
+                fullText += parsed.response;
+            }
+        } catch {
+            fullText += `${line}\n`;
+        }
+    }
+
+    return fullText.trim();
+}
+
+function parseTasksFromOllamaOutput(rawText) {
+    const normalized = normalizeOllamaText(rawText);
+    if (!normalized) return [];
+
+    let candidate = normalized;
 
     try {
-        // --- Call Ollama for task extraction ---
-        const response = await fetch("http://localhost:11434/api/generate", {
+        const maybeParsed = JSON.parse(normalized);
+        if (Array.isArray(maybeParsed)) {
+            return maybeParsed.filter((item) => item?.assignee && item?.task && item?.due_date);
+        }
+        if (maybeParsed?.assignee && maybeParsed?.task && maybeParsed?.due_date) {
+            return [maybeParsed];
+        }
+    } catch {
+        // Ignore parse failure and continue with chunk extraction below.
+    }
+
+    const chunks = candidate
+        .split(/}\s*{/)
+        .map((chunk, index, arr) => {
+            if (!chunk.trim()) return null;
+            let value = chunk;
+
+            if (index === 0 && !value.trim().startsWith("{")) value = `{${value}`;
+            if (index === arr.length - 1 && !value.trim().endsWith("}")) value = `${value}}`;
+            if (index > 0 && !value.trim().startsWith("{")) value = `{${value}`;
+            if (index < arr.length - 1 && !value.trim().endsWith("}")) value = `${value}}`;
+
+            return value.trim();
+        })
+        .filter(Boolean);
+
+    const tasks = [];
+
+    for (const chunk of chunks) {
+        try {
+            const obj = JSON.parse(chunk);
+            if (obj?.assignee && obj?.task && obj?.due_date) {
+                tasks.push(obj);
+            }
+        } catch {
+            // ignore non-JSON fragments
+        }
+    }
+
+    return tasks;
+}
+
+const server = new McpServer({
+    name: "meeting-copilot",
+    version: "1.0.0",
+});
+
+server.tool(
+    "extract_tasks_from_transcript",
+    "Extract meeting action items from a transcript and return structured tasks.",
+    {
+        transcript: z.string(),
+        model: z.string().optional().default(process.env.OLLAMA_MODEL || "llama2:latest"),
+    },
+    async ({ transcript, model }) => {
+        const url = process.env.OLLAMA_URL || "http://localhost:11434/api/generate";
+
+        const response = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                model: process.env.OLLAMA_MODEL || "llama3.2:3b",
-                prompt: `Extract tasks from this transcript:\n${transcript}\nRespond ONLY with a valid JSON array of objects. Each object must have: "assignee", "task", "due_date". Use curly braces {} for objects. Do not include any text outside the JSON.`
-            })
+                model,
+                prompt: `Extract tasks from this transcript. Respond ONLY with valid JSON. Each object must contain: "assignee", "task", and "due_date". Use a JSON array of objects.\n\nTranscript:\n${transcript}`,
+            }),
         });
 
-        // Ollama streams line-by-line JSON fragments
-        const reader = response.body.getReader();
-        let fullText = "";
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = new TextDecoder().decode(value);
-
-            for (const line of chunk.split("\n")) {
-                if (!line.trim()) continue;
-                try {
-                    const parsed = JSON.parse(line);
-                    if (parsed.response) {
-                        fullText += parsed.response; // accumulate fragments
-                    }
-                } catch (err) {
-                    console.error("Skipping invalid line:", line);
-                }
-            }
+        if (!response.ok) {
+            throw new Error(`Ollama request failed: ${response.status} ${response.statusText}`);
         }
 
-        console.log("Collected Ollama response:", fullText);
+        const raw = await response.text();
+        const tasks = parseTasksFromOllamaOutput(raw);
 
-        // --- Parse Ollama output ---
-        let tasks = [];
-        try {
-            // Split concatenated objects by pattern "} {"
-            const rawObjects = fullText
-                .split(/}\s*{/)
-                .map((chunk, index, arr) => {
-                    if (!chunk.trim()) return null;
-                    // Add braces back
-                    if (index === 0 && !chunk.trim().startsWith("{")) chunk = "{" + chunk;
-                    if (index === arr.length - 1 && !chunk.trim().endsWith("}")) chunk = chunk + "}";
-                    if (index > 0 && !chunk.trim().startsWith("{")) chunk = "{" + chunk;
-                    if (index < arr.length - 1 && !chunk.trim().endsWith("}")) chunk = chunk + "}";
-                    return chunk;
-                })
-                .filter(Boolean);
-
-            for (const objStr of rawObjects) {
-                try {
-                    const obj = JSON.parse(objStr);
-                    if (obj.assignee && obj.task && obj.due_date) {
-                        tasks.push(obj);
-                    }
-                } catch (err) {
-                    console.error("Skipping invalid JSON object:", objStr);
-                }
-            }
-        } catch (err) {
-            console.error("Failed to process Ollama output:", fullText);
-            return res.status(500).json({ error: "Invalid Ollama output" });
+        if (!tasks.length) {
+            throw new Error("No valid tasks were extracted from the transcript.");
         }
 
-        if (!Array.isArray(tasks) || tasks.length === 0) {
-            return res.status(500).json({ error: "No valid tasks extracted from Ollama output" });
-        }
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(tasks, null, 2),
+                },
+            ],
+        };
+    }
+);
 
-        console.log("Parsed tasks:", tasks);
+server.tool(
+    "create_follow_up_tasks",
+    "Create Jira issues and send email follow-ups for extracted meeting tasks.",
+    {
+        tasks: z.array(taskSchema).min(1),
+        dryRun: z.boolean().optional().default(false),
+    },
+    async ({ tasks, dryRun }) => {
+        const created = [];
 
-        // --- Process tasks ---
         for (const task of tasks) {
             const participant = participants[task.assignee];
+
             if (!participant) {
-                console.warn(`No mapping found for ${task.assignee}`);
+                created.push({
+                    assignee: task.assignee,
+                    status: "skipped",
+                    reason: "No participant mapping found",
+                });
                 continue;
             }
-            console.log(`Processing task for ${participant.email}: ${task.task} (due ${task.due_date})`);
 
-            // --- Send Email ---
-            await transporter.sendMail({
-                from: process.env.SMTP_FROM || process.env.SMTP_USER,
-                to: participant.email,
-                subject: "Meeting Action Items",
-                text: `Task: ${task.task}\nDue: ${task.due_date}`
-            });
-            console.log(`Email sent to ${participant.email}`);
+            if (!dryRun) {
+                await transporter.sendMail({
+                    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+                    to: participant.email,
+                    subject: "Meeting Action Items",
+                    text: `Task: ${task.task}\nDue: ${task.due_date}`,
+                });
 
-            // --- Create Jira Issue ---
-            await jira.addNewIssue({
-                fields: {
-                    project: { key: process.env.JIRA_PROJECT_KEY || "TEAM" },
-                    summary: task.task,
-                    description: `Task from meeting transcript`,
-                    assignee: { name: participant.jira_user },
-                    duedate: formatJiraDate(task.due_date),
-                    issuetype: { name: "Task" }
-                }
+                await jira.addNewIssue({
+                    fields: {
+                        project: { key: process.env.JIRA_PROJECT_KEY || "TEAM" },
+                        summary: task.task,
+                        description: "Task created from meeting transcript",
+                        assignee: { name: participant.jira_user },
+                        duedate: formatJiraDate(task.due_date),
+                        issuetype: { name: "Task" },
+                    },
+                });
+            }
+
+            created.push({
+                assignee: task.assignee,
+                email: participant.email,
+                jiraUser: participant.jira_user,
+                task: task.task,
+                dueDate: task.due_date,
+                status: dryRun ? "dry-run" : "created",
             });
         }
 
-        res.json({ status: "success", tasks });
-    } catch (err) {
-        console.error("Error in /upload:", err);
-        res.status(500).json({ error: err.message });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({ created }, null, 2),
+                },
+            ],
+        };
     }
-});
-
-
-
-
-app.get("/jira-test", async (req, res) => {
-    try {
-        console.log("Jira host:", process.env.JIRA_HOST);
-        console.log("Jira user:", process.env.JIRA_USER);
-        console.log("Jira project:", process.env.JIRA_PROJECT_KEY);
-
-        const project = await jira.getProject(
-            process.env.JIRA_PROJECT_KEY
-        );
-
-        res.json({
-            success: true,
-            project: {
-                id: project.id,
-                key: project.key,
-                name: project.name
-            }
-        });
-    } catch (err) {
-        console.error("Jira project test failed:", err);
-
-        res.status(500).json({
-            success: false,
-            error: err.message
-        });
-    }
-});
-
-app.get("/jira-user-test", async (req, res) => {
-    try {
-        const user = await jira.getCurrentUser();
-
-        res.json({
-            success: true,
-            user: {
-                accountId: user.accountId,
-                displayName: user.displayName,
-                emailAddress: user.emailAddress
-            }
-        });
-    } catch (err) {
-        console.error("Jira user test failed:", err);
-
-        res.status(500).json({
-            success: false,
-            error: err.message
-        });
-    }
-});
-
-app.listen(process.env.PORT || 3000, () =>
-    console.log(`MCP server running on port ${process.env.PORT || 3000}`)
 );
+
+server.tool(
+    "test_jira_connection",
+    "Check whether Jira can be reached and the configured project is valid.",
+    {},
+    async () => {
+        const projectKey = process.env.JIRA_PROJECT_KEY || "TEAM";
+        const project = await jira.getProject(projectKey);
+
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(
+                        {
+                            success: true,
+                            project: {
+                                id: project.id,
+                                key: project.key,
+                                name: project.name,
+                            },
+                        },
+                        null,
+                        2
+                    ),
+                },
+            ],
+        };
+    }
+);
+
+server.tool(
+    "health_check",
+    "Return the local health status of the integrated services.",
+    {},
+    async () => {
+        const status = {
+            ollama: "unknown",
+            jira: "unknown",
+            email: "unknown",
+        };
+
+        try {
+            const response = await fetch(process.env.OLLAMA_URL || "http://localhost:11434/api/tags");
+            status.ollama = response.ok ? "ok" : "error";
+        } catch {
+            status.ollama = "unavailable";
+        }
+
+        try {
+            await jira.getProject(process.env.JIRA_PROJECT_KEY || "TEAM");
+            status.jira = "ok";
+        } catch {
+            status.jira = "unavailable";
+        }
+
+        try {
+            await transporter.verify();
+            status.email = "ok";
+        } catch {
+            status.email = "unavailable";
+        }
+
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(status, null, 2),
+                },
+            ],
+        };
+    }
+);
+
+async function main() {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error("Meeting Copilot MCP server started");
+}
+
+main().catch((error) => {
+    console.error("MCP server startup failed:", error);
+    process.exit(1);
+});

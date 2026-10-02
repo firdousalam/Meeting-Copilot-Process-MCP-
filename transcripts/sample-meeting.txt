@@ -1,0 +1,14 @@
+Team standup notes
+
+Sarah: We need to finalize the launch checklist for the mobile app before Friday.
+John: I will review the onboarding copy and send it to the design team.
+Aisha: Please update the analytics dashboard with the new conversion metrics.
+David: We also need to prepare the customer feedback summary for the next leadership review.
+
+Action items:
+- Sarah owns the launch checklist.
+- John is responsible for onboarding copy review.
+- Aisha will update the dashboard.
+- David will prepare the customer feedback summary.
+
+Due dates: Sarah and David need this by Friday; John by Thursday; Aisha by end of week.

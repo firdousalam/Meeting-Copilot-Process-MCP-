@@ -1,0 +1,18 @@
+{
+    "name": "meeting-copilot-process-mcp",
+    "version": "1.0.0",
+    "description": "Meeting Copilot MCP server for transcript processing, Jira issue creation, and email follow-ups",
+    "main": "server.js",
+    "type": "module",
+    "scripts": {
+        "start": "node server.js",
+        "check": "node --check server.js"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.13.3",
+        "dotenv": "^16.4.5",
+        "jira-client": "^8.2.0",
+        "nodemailer": "^6.9.14",
+        "zod": "^3.23.8"
+    }
+}
