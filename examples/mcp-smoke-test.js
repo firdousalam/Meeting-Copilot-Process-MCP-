@@ -24,7 +24,7 @@ try {
         name: "extract_tasks_from_transcript",
         arguments: {
             transcript,
-            model: "llama3.2:3b"
+            model: process.env.OLLAMA_MODEL || "llama2:latest"
         }
     });
 

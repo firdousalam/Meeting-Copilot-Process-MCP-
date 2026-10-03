@@ -40,6 +40,11 @@ const taskSchema = z.object({
     due_date: z.string(),
 });
 
+const server = new McpServer({
+    name: "meeting-copilot",
+    version: "1.0.0",
+});
+
 function formatJiraDate(dateString) {
     const date = new Date(dateString);
 
@@ -53,83 +58,106 @@ function formatJiraDate(dateString) {
 function normalizeOllamaText(rawText) {
     if (!rawText) return "";
 
-    const cleaned = rawText
-        .replace(/```json/gi, "")
-        .replace(/```/g, "")
-        .trim();
+    const lines = rawText
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
 
-    if (!cleaned) return "";
-
-    const lines = cleaned.split(/\r?\n/).filter((line) => line.trim());
-    let fullText = "";
+    const fragments = [];
 
     for (const line of lines) {
         try {
             const parsed = JSON.parse(line);
             if (parsed?.response) {
-                fullText += parsed.response;
+                fragments.push(parsed.response);
+            } else if (typeof parsed === "string") {
+                fragments.push(parsed);
+            } else if (parsed && typeof parsed === "object") {
+                fragments.push(JSON.stringify(parsed));
             }
         } catch {
-            fullText += `${line}\n`;
+            fragments.push(line);
         }
     }
 
-    return fullText.trim();
+    return fragments
+        .join("")
+        .replace(/```json/gi, "")
+        .replace(/```/g, "")
+        .trim();
 }
 
 function parseTasksFromOllamaOutput(rawText) {
     const normalized = normalizeOllamaText(rawText);
     if (!normalized) return [];
 
-    let candidate = normalized;
+    const candidateValues = [normalized];
 
-    try {
-        const maybeParsed = JSON.parse(normalized);
-        if (Array.isArray(maybeParsed)) {
-            return maybeParsed.filter((item) => item?.assignee && item?.task && item?.due_date);
-        }
-        if (maybeParsed?.assignee && maybeParsed?.task && maybeParsed?.due_date) {
-            return [maybeParsed];
-        }
-    } catch {
-        // Ignore parse failure and continue with chunk extraction below.
+    const arrayStart = normalized.indexOf("[");
+    const arrayEnd = normalized.lastIndexOf("]");
+    if (arrayStart >= 0 && arrayEnd > arrayStart) {
+        candidateValues.push(normalized.slice(arrayStart, arrayEnd + 1));
     }
 
-    const chunks = candidate
-        .split(/}\s*{/)
-        .map((chunk, index, arr) => {
-            if (!chunk.trim()) return null;
-            let value = chunk;
+    const objectStart = normalized.indexOf("{");
+    const objectEnd = normalized.lastIndexOf("}");
+    if (objectStart >= 0 && objectEnd > objectStart) {
+        candidateValues.push(normalized.slice(objectStart, objectEnd + 1));
+    }
 
-            if (index === 0 && !value.trim().startsWith("{")) value = `{${value}`;
-            if (index === arr.length - 1 && !value.trim().endsWith("}")) value = `${value}}`;
-            if (index > 0 && !value.trim().startsWith("{")) value = `{${value}`;
-            if (index < arr.length - 1 && !value.trim().endsWith("}")) value = `${value}}`;
-
-            return value.trim();
-        })
-        .filter(Boolean);
-
+    const seen = new Set();
     const tasks = [];
 
-    for (const chunk of chunks) {
+    for (const candidate of candidateValues) {
+        if (!candidate || seen.has(candidate)) continue;
+        seen.add(candidate);
+
         try {
-            const obj = JSON.parse(chunk);
-            if (obj?.assignee && obj?.task && obj?.due_date) {
-                tasks.push(obj);
+            const parsed = JSON.parse(candidate);
+            const list = Array.isArray(parsed) ? parsed : [parsed];
+            for (const item of list) {
+                if (item?.assignee && item?.task) {
+                    tasks.push({
+                        ...item,
+                        due_date: item?.due_date ?? "TBD",
+                    });
+                }
             }
+            if (tasks.length) return tasks;
         } catch {
-            // ignore non-JSON fragments
+            // fall through and try fragmented object parsing
+        }
+
+        const splitCandidates = candidate
+            .split(/}\s*\{/) 
+            .map((chunk, index, arr) => {
+                if (!chunk.trim()) return null;
+                let value = chunk.trim();
+                if (index === 0 && !value.startsWith("{")) value = `{${value}`;
+                if (index === arr.length - 1 && !value.endsWith("}")) value = `${value}}`;
+                if (index > 0 && !value.startsWith("{")) value = `{${value}`;
+                if (index < arr.length - 1 && !value.endsWith("}")) value = `${value}}`;
+                return value;
+            })
+            .filter(Boolean);
+
+        for (const splitCandidate of splitCandidates) {
+            try {
+                const parsed = JSON.parse(splitCandidate);
+                if (parsed?.assignee && parsed?.task) {
+                    tasks.push({
+                        ...parsed,
+                        due_date: parsed?.due_date ?? "TBD",
+                    });
+                }
+            } catch {
+                // ignore partial fragments
+            }
         }
     }
 
     return tasks;
 }
-
-const server = new McpServer({
-    name: "meeting-copilot",
-    version: "1.0.0",
-});
 
 server.tool(
     "extract_tasks_from_transcript",
@@ -146,7 +174,12 @@ server.tool(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 model,
-                prompt: `Extract tasks from this transcript. Respond ONLY with valid JSON. Each object must contain: "assignee", "task", and "due_date". Use a JSON array of objects.\n\nTranscript:\n${transcript}`,
+                stream: false,
+                options: {
+                    temperature: 0,
+                    top_p: 0.1,
+                },
+                prompt: `You are an extraction engine. Extract action items from the transcript into a JSON array. Keep ONLY valid JSON. Use this exact schema: [{"assignee":"string","task":"string","due_date":"string"}] . Do not add commentary. If a due date is not explicit, infer it from the transcript text (examples: Friday, Thursday, end of week, next Monday). Transcript:\n${transcript}`,
             }),
         });
 
@@ -154,7 +187,8 @@ server.tool(
             throw new Error(`Ollama request failed: ${response.status} ${response.statusText}`);
         }
 
-        const raw = await response.text();
+        const responsePayload = await response.json();
+        const raw = responsePayload?.response || JSON.stringify(responsePayload);
         const tasks = parseTasksFromOllamaOutput(raw);
 
         if (!tasks.length) {
