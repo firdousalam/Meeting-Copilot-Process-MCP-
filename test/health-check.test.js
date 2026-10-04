@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 import {
     buildFollowUpEmail,
@@ -35,6 +40,7 @@ test('resolveOllamaModel prefers a lightweight default model for faster task ext
 
 test('extractStructuredJiraTasks returns the epic and each numbered child task separately', () => {
     const transcript = `
+[00:01] Technophile Firdous (Host, Project Manager): Let’s start with a quick status update.
 [00:12] Host: Developer 1, please create an Epic in Jira titled “Implement RBAC for MCP” and assign it to yourself. The deadline is October 15, 2026.
 [00:15] Host: Under this epic, create 4 tasks:
 Task 1: Design RBAC schema (assigned to Developer 2).
@@ -75,7 +81,8 @@ Task 4: Add RBAC enforcement in email + Jira modules (assigned to Developer 3).
     assert.deepEqual(tasks.map(({ story_points }) => story_points), [13, 3, 3, 4, 3, null]);
     assert.deepEqual(tasks.map(({ estimated_days }) => estimated_days), [13, 3, 3, 4, 3, null]);
     assert.deepEqual(tasks.map(({ requested_by }) => requested_by), [
-        'Host', 'Host', 'Host', 'Host', 'Host', 'Host',
+        'Technophile Firdous', 'Technophile Firdous', 'Technophile Firdous',
+        'Technophile Firdous', 'Technophile Firdous', 'Technophile Firdous',
     ]);
     assert.deepEqual(tasks.map(({ source_timestamp }) => source_timestamp), [
         '00:12', '00:15', '00:15', '00:15', '00:15', '00:37',
@@ -106,4 +113,41 @@ test('Jira description and email include call context, estimates, due date, and 
     assert.match(email, /Jira link: https:\/\/example\.atlassian\.net\/browse\/SCRUM-42/);
     assert.match(email, /Requested by: Host/);
     assert.match(email, /Due date: 2026-10-15/);
+});
+
+test('MCP create tool accepts enriched issues in dry-run mode without external writes', async () => {
+    const projectRoot = fileURLToPath(new URL('../', import.meta.url));
+    const transcript = fs.readFileSync(path.join(projectRoot, 'transcripts', 'sample-meeting.txt'), 'utf8');
+    const client = new Client({ name: 'meeting-copilot-regression', version: '1.0.0' }, { capabilities: {} });
+    const transport = new StdioClientTransport({
+        command: process.execPath,
+        args: [path.join(projectRoot, 'server.js')],
+        cwd: projectRoot,
+        env: process.env,
+    });
+
+    try {
+        await client.connect(transport);
+        const extraction = await client.callTool({
+            name: 'extract_tasks_from_transcript',
+            arguments: { transcript },
+        });
+        const tasks = JSON.parse(extraction.content[0].text);
+        const result = await client.callTool({
+            name: 'create_follow_up_tasks',
+            arguments: { tasks, dryRun: true },
+        });
+        const created = JSON.parse(result.content[0].text).created;
+
+        assert.equal(created.length, 6);
+        assert.equal(created[0].status, 'dry-run');
+        assert.equal(created[0].requestedBy, 'Technophile Firdous');
+        assert.equal(created[0].dueDate, '2026-10-15');
+        assert.equal(created[0].storyPoints, 13);
+        assert.equal(created[0].estimatedDays, 13);
+        assert.equal(created[0].jiraUrl, null);
+        assert.equal(created[0].emailStatus, 'not-sent-dry-run');
+    } finally {
+        await client.close();
+    }
 });

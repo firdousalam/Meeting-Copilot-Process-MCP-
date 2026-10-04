@@ -99,8 +99,13 @@ function findTranscriptAction(transcript, actionPattern) {
     }
 
     const match = line.match(/^\s*(?:\[([^\]]+)\]\s*)?([^:\r\n]+):\s*(.*)$/);
+    const speaker = match?.[2]?.trim();
+    const escapedSpeaker = speaker?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const speakerIntroduction = escapedSpeaker
+        ? transcript.match(new RegExp(`^\\s*(?:\\[[^\\]]+\\]\\s*)?([^:\\r\\n]+?)\\s*\\([^\\r\\n)]*\\b${escapedSpeaker}\\b[^\\r\\n)]*\\):`, "im"))
+        : null;
     return {
-        requested_by: match?.[2]?.trim() || "Not identified",
+        requested_by: speakerIntroduction?.[1]?.trim() || speaker || "Not identified",
         source_action: match?.[3]?.trim() || line.trim(),
         source_timestamp: match?.[1]?.trim() || null,
     };
