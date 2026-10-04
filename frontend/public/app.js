@@ -76,17 +76,17 @@ generateBtn.addEventListener('click', async () => {
 
     const tasks = extractedItems.filter((item) =>
         item && typeof item.assignee === 'string' && typeof item.task === 'string' &&
-        typeof item.due_date === 'string' && (!item.issue_type || item.issue_type === 'Task')
+        typeof item.due_date === 'string' &&
+        (!item.issue_type || ['Epic', 'Story', 'Task', 'Sub-task'].includes(item.issue_type))
     );
-    const unsupportedCount = extractedItems.length - tasks.length;
 
     if (tasks.length === 0) {
-        FollowUpOutput.textContent = 'No standard Jira tasks found. This endpoint does not create epics or subtasks.';
+        FollowUpOutput.textContent = 'No valid Jira issues found in the meeting extract.';
         FollowUpCard.classList.remove('hidden');
         return;
     }
 
-    FollowUpOutput.textContent = `Creating ${tasks.length} Jira task(s) and sending follow-up emails...`;
+    FollowUpOutput.textContent = `Creating ${tasks.length} Jira issue(s) and sending follow-up emails...`;
     FollowUpCard.classList.remove('hidden');
 
     try {
@@ -96,10 +96,7 @@ generateBtn.addEventListener('click', async () => {
             throw new Error(data.error || 'create-follow-ups failed');
         }
 
-        FollowUpOutput.textContent = JSON.stringify({
-            result: data.data,
-            unsupportedItemsNotSent: unsupportedCount,
-        }, null, 2);
+        FollowUpOutput.textContent = JSON.stringify(data.data, null, 2);
     } catch (error) {
         FollowUpOutput.textContent = `Error: ${error.message}`;
     }
