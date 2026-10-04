@@ -106,11 +106,11 @@ Example:
 ```env
 SMTP_HOST=smtp-relay.brevo.com
 SMTP_PORT=587
-SMTP_USER=your-smtp-login
-SMTP_PASS=your-smtp-key
+SMTP_USER=your-brevo-smtp-login
+SMTP_PASS=your-brevo-smtp-key
 SMTP_FROM=your-verified-sender@gmail.com
 
-JIRA_HOST=your-company.atlassian.net
+JIRA_HOST=https://your-company.atlassian.net/
 JIRA_USER=your-jira-email
 JIRA_PASS=your-jira-api-token
 JIRA_PROJECT_KEY=SCRUM
@@ -119,18 +119,22 @@ JIRA_EPIC_NAME_FIELD=customfield_10011
 JIRA_EPIC_LINK_FIELD=customfield_10014
 JIRA_STORY_POINTS_FIELD=customfield_10016
 STORY_POINTS_PER_WORKDAY=1
+MCP_CREATE_TIMEOUT_MS=300000
 
 OLLAMA_URL=http://localhost:11434/api/generate
 OLLAMA_MODEL=llama2:latest
 ```
 
 Important:
-- `SMTP_USER` is the SMTP login or username
-- `SMTP_PASS` is the SMTP key or password
+- For Brevo, `SMTP_USER` is the SMTP login shown in Brevo SMTP settings, not necessarily your sender email.
+- `SMTP_PASS` is the provider's SMTP key/password. For Brevo, use an SMTP key, not an API key.
 - `SMTP_FROM` is the email that will appear as the sender
 - `JIRA_PASS` should be an Atlassian API token, not your normal password
-- Confirm the Jira custom-field IDs for Epic name, Epic link, and story points in your Jira project; they vary by site.
+- `JIRA_HOST` accepts a bare hostname or a full URL; the app normalizes it for API requests. `JIRA_BASE_URL` is used to build issue links.
+- Jira Cloud assignees are resolved by matching participant email addresses. Add `jira_account_id` to a participant in `participants.json` to override lookup.
+- Confirm the Jira custom-field IDs for Epic name, Epic link, and story points in your project; they vary by site. Story points are sent only when `JIRA_STORY_POINTS_FIELD` is configured.
 - If a call gives story points but no duration, the app estimates workdays using `STORY_POINTS_PER_WORKDAY` (default: one point per workday).
+- `MCP_CREATE_TIMEOUT_MS` controls how long the web client waits for multi-issue creation.
 
 ## 5) Configure participant mapping
 
@@ -182,7 +186,7 @@ Input:
 - optional `model` (string)
 
 Output:
-- structured JSON array of tasks with `assignee`, `task`, and `due_date`
+- structured JSON array with `assignee`, `task`, `due_date`, issue type, parent, requester, call source, story points, estimated workdays, and task details when available
 
 ### create_follow_up_tasks
 
@@ -191,9 +195,10 @@ Input:
 - optional `dryRun` (boolean)
 
 Behavior:
-- sends email follow-ups
-- creates Jira issues
+- verifies SMTP before creating issues, then creates Jira issues and sends email follow-ups with Jira links
+- includes requester, call action/timestamp, due date, story points, estimated duration, and task details in issue descriptions and emails
 - optionally skips external actions when `dryRun` is true
+- returns per-issue status and Jira links; email failures after Jira creation are reported as partial failures
 
 ### test_jira_connection
 
@@ -386,13 +391,17 @@ Check:
 - `JIRA_USER`
 - `JIRA_PASS`
 - `JIRA_PROJECT_KEY`
+- for Jira Cloud, verify participant email lookup or configure `jira_account_id` in `participants.json`
+- verify the requested issue type and configured custom-field IDs are available in the target project
 
 ### Emails are not sent
 
 Check:
 - SMTP host and port
-- SMTP credentials
+- the provider SMTP login in `SMTP_USER` and SMTP key in `SMTP_PASS` (these may differ from the sender address and API key)
 - sender verification in the email provider
+
+The app verifies SMTP before creating Jira issues, so an SMTP authentication failure should stop a new batch before issue creation. If the response says Jira issues were created but email failed, do not retry the whole batch; use the returned Jira keys/links and fix SMTP before resending follow-ups.
 
 ## Example use-case flow
 

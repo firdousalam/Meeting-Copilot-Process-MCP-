@@ -797,6 +797,20 @@ server.tool(
             (left, right) => (issuePriority[left.issue_type] ?? 1) - (issuePriority[right.issue_type] ?? 1)
         );
 
+        if (!dryRun) {
+            try {
+                await transporter.verify();
+            } catch (error) {
+                return {
+                    isError: true,
+                    content: [{
+                        type: "text",
+                        text: `SMTP verification failed before Jira creation; no new issues were created. Check SMTP_HOST, SMTP_PORT, SMTP_USER (provider login), and SMTP_PASS (provider SMTP key). ${error instanceof Error ? error.message : String(error)}`,
+                    }],
+                };
+            }
+        }
+
         console.log(`Creating ${orderedTasks.length} Jira issues (dryRun=${dryRun})...`);
         for (const task of orderedTasks) {
             const participant = participants[task.assignee];

@@ -93,6 +93,18 @@ app.post('/api/extract', async (req, res) => {
         return res.status(500).json({ success: false, error: result.error });
     }
 
+    const outcomes = result.data?.created;
+    const emailFailures = Array.isArray(outcomes)
+        ? outcomes.filter((item) => item.status === 'created-email-failed')
+        : [];
+    if (emailFailures.length > 0) {
+        return res.status(502).json({
+            success: false,
+            error: 'Jira issues were created, but email delivery failed. Do not retry issue creation; the created Jira keys and links are included below.',
+            data: result.data,
+        });
+    }
+
     res.json({ success: true, data: result.data });
 });
 
