@@ -114,6 +114,11 @@ JIRA_HOST=your-company.atlassian.net
 JIRA_USER=your-jira-email
 JIRA_PASS=your-jira-api-token
 JIRA_PROJECT_KEY=SCRUM
+JIRA_BASE_URL=https://your-company.atlassian.net
+JIRA_EPIC_NAME_FIELD=customfield_10011
+JIRA_EPIC_LINK_FIELD=customfield_10014
+JIRA_STORY_POINTS_FIELD=customfield_10016
+STORY_POINTS_PER_WORKDAY=1
 
 OLLAMA_URL=http://localhost:11434/api/generate
 OLLAMA_MODEL=llama2:latest
@@ -124,6 +129,8 @@ Important:
 - `SMTP_PASS` is the SMTP key or password
 - `SMTP_FROM` is the email that will appear as the sender
 - `JIRA_PASS` should be an Atlassian API token, not your normal password
+- Confirm the Jira custom-field IDs for Epic name, Epic link, and story points in your Jira project; they vary by site.
+- If a call gives story points but no duration, the app estimates workdays using `STORY_POINTS_PER_WORKDAY` (default: one point per workday).
 
 ## 5) Configure participant mapping
 
