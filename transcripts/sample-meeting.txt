@@ -1,14 +1,59 @@
-Team standup notes
+Transcript – MCP Development Sync
+Date: September 27, 2026
+Duration: 50 minutes
 
-Sarah: We need to finalize the launch checklist for the mobile app before Friday.
-John: I will review the onboarding copy and send it to the design team.
-Aisha: Please update the analytics dashboard with the new conversion metrics.
-David: We also need to prepare the customer feedback summary for the next leadership review.
+[00:01] Technophile Firdous (Host, Project Manager): Thanks everyone for joining. Let’s start with a quick status update. How’s the work going?
 
-Action items:
-- Sarah owns the launch checklist.
-- John is responsible for onboarding copy review.
-- Aisha will update the dashboard.
-- David will prepare the customer feedback summary.
+[00:03] Developer 1 (Firdous Alam): I’ve completed the initial integration of the Ollama API. I’ll finish testing by Wednesday.
 
-Due dates: Sarah and David need this by Friday; John by Thursday; Aisha by end of week.
+[00:05] Developer 2 (Firdous Alam – ymail): I’m working on the email notification module. I’ll need another two days to finalize error handling.
+
+[00:07] Developer 3 (Tech Firdous Alam): I’ve started on the Jira issue creation logic. I’ll complete the draft implementation by Friday.
+
+[00:10] Host (Technophile Firdous): Great progress. Now, I want to explain the RBAC (Role-Based Access Control) feature. We need to manage permissions so only authorized users can trigger MCP actions. This will be a major epic in Jira.
+
+[00:12] Host: Developer 1, please create an Epic in Jira titled “Implement RBAC for MCP” and assign it to yourself. The deadline is October 15, 2026.
+
+[00:15] Host: Under this epic, create 4 tasks:
+
+Task 1: Design RBAC schema (assigned to Developer 2).
+
+Task 2: Implement role validation middleware (assigned to Developer 2).
+
+Task 3: Integrate RBAC checks into transcript processing (assigned to Developer 3).
+
+Task 4: Add RBAC enforcement in email + Jira modules (assigned to Developer 3).
+
+[00:20] Host: Each task should be estimated with story points based on complexity. Since the epic deadline is October 15, distribute points accordingly:
+
+Epic: 13 points
+
+Each task: 3–5 points depending on workload.
+
+[00:23] Developer 1: I’ll also document the API integration steps in Confluence so future developers can follow the setup easily.
+
+[00:25] Developer 2: I’ll add unit tests for the email module to ensure error handling is reliable. I’ll also prepare a demo for next week’s sync.
+
+[00:27] Developer 3: For the Jira logic, I’ll create a mock payload to test RBAC enforcement before connecting to the live API.
+
+[00:30] Host: Good. Let’s also add a checkpoint meeting on October 5, 2026 to review progress and unblock any issues.
+
+[00:33] Host: Please ensure all commits reference the Jira task IDs. This will help us track work more effectively.
+
+[00:36] Developer 1: Should we also add logging for RBAC failures? That way, we can monitor unauthorized attempts.
+
+[00:37] Host: Yes, great point. Add a sub-task under Task 2 for logging and monitoring.
+
+[00:40] Developer 2: I’ll handle that. I’ll also explore integrating alerts with Slack for failed RBAC checks.
+
+[00:42] Host: Perfect. Let’s keep security in mind throughout. RBAC is critical for MCP’s reliability.
+
+[00:45] Host: Any blockers or dependencies we should note?
+
+[00:46] Developer 3: I’ll need access to the staging Jira environment by tomorrow to test payloads.
+
+[00:47] Host: Noted. I’ll coordinate with IT to grant access today.
+
+[00:49] Host: Please update Jira with these assignments today so we can track progress.
+
+[00:50] Host: Meeting adjourned. Thanks everyone.

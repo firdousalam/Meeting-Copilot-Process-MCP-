@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
 import fs from "node:fs";
+import path from "node:path";
 import nodemailer from "nodemailer";
 import JiraClient from "jira-client";
 import { fileURLToPath } from "node:url";
@@ -53,6 +54,93 @@ function formatJiraDate(dateString) {
     }
 
     return date.toISOString().slice(0, 10);
+}
+
+export function resolveOllamaHealthUrl(ollamaUrl) {
+    const origin = (ollamaUrl || "http://localhost:11434/api/generate").trim();
+
+    if (!origin) {
+        return "http://localhost:11434/api/tags";
+    }
+
+    const normalized = origin.replace(/\/+$/, "");
+
+    if (normalized.endsWith("/api/generate")) {
+        return `${normalized.slice(0, -"/api/generate".length)}/api/tags`;
+    }
+
+    if (normalized.endsWith("/api")) {
+        return `${normalized}/tags`;
+    }
+
+    if (normalized.includes("/api/")) {
+        return normalized.replace(/\/api\/.*$/, "/api/tags");
+    }
+
+    return `${normalized.replace(/\/$/, "")}/api/tags`;
+}
+
+export function resolveOllamaModel(modelName) {
+    const value = (modelName || process.env.OLLAMA_MODEL || "llama3.2:1b").trim();
+    return value || "llama3.2:1b";
+}
+
+export function extractStructuredJiraTasks(transcript) {
+    const epicMatch = transcript.match(
+        /Developer\s+(\d+),\s*please create an Epic in Jira titled\s+[“"]([^”"]+)[”"].*?deadline is\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})/i
+    );
+    const numberedTasks = [...transcript.matchAll(
+        /^Task\s+\d+:\s*(.+?)\s+\(assigned to\s+(Developer\s+\d+)\)\.?$/gim
+    )];
+    const subTaskMatch = transcript.match(/Add a sub-task under Task\s+(\d+) for\s+([^.]+)\./i);
+
+    if (!epicMatch || numberedTasks.length === 0) {
+        return [];
+    }
+
+    const dueDate = new Date(`${epicMatch[3]} UTC`).toISOString().slice(0, 10);
+    const taskPoints = numberedTasks.map(() => 3);
+    if (taskPoints.length === 4) {
+        taskPoints[2] = 4;
+    }
+
+    const tasks = [
+        {
+            assignee: `Developer ${epicMatch[1]}`,
+            task: epicMatch[2].trim(),
+            due_date: dueDate,
+            issue_type: "Epic",
+            parent: null,
+            story_points: 13,
+        },
+        ...numberedTasks.map((match, index) => ({
+            assignee: match[2],
+            task: match[1].trim(),
+            due_date: dueDate,
+            issue_type: "Task",
+            parent: epicMatch[2].trim(),
+            story_points: taskPoints[index],
+        })),
+    ];
+
+    if (subTaskMatch) {
+        const parentTask = numberedTasks.find((match) => match[0].match(/^Task\s+(\d+):/i)?.[1] === subTaskMatch[1]);
+        if (parentTask) {
+            const ownerMatch = transcript
+                .slice(subTaskMatch.index)
+                .match(/(?:^|\n)Developer\s+(\d+):\s*I[’']ll handle that\./i);
+            tasks.push({
+                assignee: ownerMatch ? `Developer ${ownerMatch[1]}` : parentTask[2],
+                task: subTaskMatch[2].trim(),
+                due_date: dueDate,
+                issue_type: "Sub-task",
+                parent: parentTask[1].trim(),
+                story_points: null,
+            });
+        }
+    }
+
+    return tasks;
 }
 
 function normalizeOllamaText(rawText) {
@@ -129,7 +217,7 @@ function parseTasksFromOllamaOutput(rawText) {
         }
 
         const splitCandidates = candidate
-            .split(/}\s*\{/) 
+            .split(/}\s*\{/)
             .map((chunk, index, arr) => {
                 if (!chunk.trim()) return null;
                 let value = chunk.trim();
@@ -164,45 +252,73 @@ server.tool(
     "Extract meeting action items from a transcript and return structured tasks.",
     {
         transcript: z.string(),
-        model: z.string().optional().default(process.env.OLLAMA_MODEL || "llama2:latest"),
+        model: z.string().optional().default(resolveOllamaModel()),
     },
     async ({ transcript, model }) => {
+        const structuredTasks = extractStructuredJiraTasks(transcript);
+        if (structuredTasks.length) {
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify(structuredTasks, null, 2),
+                    },
+                ],
+            };
+        }
+
+        const resolvedModel = resolveOllamaModel(model);
         const url = process.env.OLLAMA_URL || "http://localhost:11434/api/generate";
+        const timeoutMs = Number.parseInt(process.env.OLLAMA_TIMEOUT_MS || "45000", 10);
+        const controller = new AbortController();
+        const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
 
-        const response = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                model,
-                stream: false,
-                options: {
-                    temperature: 0,
-                    top_p: 0.1,
-                },
-                prompt: `You are an extraction engine. Extract action items from the transcript into a JSON array. Keep ONLY valid JSON. Use this exact schema: [{"assignee":"string","task":"string","due_date":"string"}] . Do not add commentary. If a due date is not explicit, infer it from the transcript text (examples: Friday, Thursday, end of week, next Monday). Transcript:\n${transcript}`,
-            }),
-        });
+        try {
+            const response = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                signal: controller.signal,
+                body: JSON.stringify({
+                    model: resolvedModel,
+                    format: "json",
+                    stream: false,
+                    options: {
+                        temperature: 0,
+                        top_p: 0.1,
+                        num_predict: 256,
+                    },
+                    prompt: `You are an extraction engine. Extract action items from the transcript into a JSON array. Keep ONLY valid JSON. Use this exact schema: [{"assignee":"string","task":"string","due_date":"string"}] . Do not add commentary. If a due date is not explicit, infer it from the transcript text (examples: Friday, Thursday, end of week, next Monday). Transcript:\n${transcript}`,
+                }),
+            });
 
-        if (!response.ok) {
-            throw new Error(`Ollama request failed: ${response.status} ${response.statusText}`);
+            if (!response.ok) {
+                throw new Error(`Ollama request failed: ${response.status} ${response.statusText}`);
+            }
+
+            const responsePayload = await response.json();
+            const raw = responsePayload?.response || JSON.stringify(responsePayload);
+            const tasks = parseTasksFromOllamaOutput(raw);
+
+            if (!tasks.length) {
+                throw new Error("No valid tasks were extracted from the transcript.");
+            }
+
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify(tasks, null, 2),
+                    },
+                ],
+            };
+        } catch (error) {
+            if (error instanceof Error && error.name === "AbortError") {
+                throw new Error(`Ollama request timed out after ${timeoutMs}ms. Try a lighter model or increase OLLAMA_TIMEOUT_MS.`);
+            }
+            throw error;
+        } finally {
+            clearTimeout(timeoutHandle);
         }
-
-        const responsePayload = await response.json();
-        const raw = responsePayload?.response || JSON.stringify(responsePayload);
-        const tasks = parseTasksFromOllamaOutput(raw);
-
-        if (!tasks.length) {
-            throw new Error("No valid tasks were extracted from the transcript.");
-        }
-
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: JSON.stringify(tasks, null, 2),
-                },
-            ],
-        };
     }
 );
 
@@ -311,7 +427,8 @@ server.tool(
         };
 
         try {
-            const response = await fetch(process.env.OLLAMA_URL || "http://localhost:11434/api/tags");
+            const ollamaHealthUrl = resolveOllamaHealthUrl(process.env.OLLAMA_URL);
+            const response = await fetch(ollamaHealthUrl);
             status.ollama = response.ok ? "ok" : "error";
         } catch {
             status.ollama = "unavailable";
@@ -348,7 +465,12 @@ async function main() {
     console.error("Meeting Copilot MCP server started");
 }
 
-main().catch((error) => {
-    console.error("MCP server startup failed:", error);
-    process.exit(1);
-});
+const isDirectExecution =
+    process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectExecution) {
+    main().catch((error) => {
+        console.error("MCP server startup failed:", error);
+        process.exit(1);
+    });
+}

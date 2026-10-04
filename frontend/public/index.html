@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Meeting Copilot</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+        /* Split the screen in half */
+        .split {
+            height: 100%;
+            width: 50%;
+            position: fixed;
+            z-index: 1;
+            top: 0;
+            overflow-x: hidden;
+            padding-top: 20px;
+
+        }
+
+        /* Control the left side */
+        .left {
+            left: 0;
+
+        }
+
+        /* Control the right side */
+        .right {
+            right: 0;
+
+        }
+
+        /* If you want the content centered horizontally and vertically */
+        .centered {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+        }
+
+        /* Style the image inside the centered container, if needed */
+        .centered img {
+            width: 150px;
+            border-radius: 50%;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Meeting Copilot</h1>
+            <p>Paste a meeting transcript and extract follow-up tasks.</p>
+        </header>
+        <div class="split left">
+
+
+            <section class="card">
+                <label for="transcript">Meeting transcript</label>
+                <textarea id="transcript" rows="14" placeholder="Paste transcript here..."></textarea>
+
+                <div class="actions">
+                    <button id="extractBtn">Extract Tasks</button>
+                    <button id="healthBtn" class="secondary">Check Health</button>
+                </div>
+            </section>
+
+            <section class="card hidden" id="resultCard">
+                <h2>Tasks</h2>
+                <pre id="resultOutput">No output yet.</pre>
+            </section>
+        </div>
+        <div class="split right">
+            <section class="card">
+                <label for="extract">Meeting Extract</label>
+                <textarea id="extract" rows="14" placeholder="Paste extract here..."></textarea>
+
+                <div class="actions">
+                    <button id="generateBtn">Genarate Jira Task</button>
+                </div>
+            </section>
+            <section class="card hidden" id="FollowUpCard">
+                <h2>Tasks</h2>
+                <pre id="FollowUpOutput">No output yet.</pre>
+            </section>
+
+
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
