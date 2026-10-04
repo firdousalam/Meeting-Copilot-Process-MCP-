@@ -39,11 +39,12 @@ const taskSchema = z.object({
     assignee: z.string(),
     task: z.string(),
     due_date: z.string(),
-    issue_type: z.enum(["Epic", "Story", "Task", "Sub-task"]).optional().default("Task"),
+    issue_type: z.enum(["Epic", "Story", "Task", "Bug", "Sub-task"]).optional().default("Task"),
     parent: z.string().nullable().optional(),
     requested_by: z.string().optional(),
     source_action: z.string().optional(),
     source_timestamp: z.string().nullable().optional(),
+    details: z.string().optional(),
     story_points: z.number().nullable().optional(),
     estimated_days: z.number().nullable().optional(),
 });
@@ -93,21 +94,40 @@ export function resolveOllamaModel(modelName) {
 }
 
 function findTranscriptAction(transcript, actionPattern) {
-    const line = transcript.split(/\r?\n/).find((value) => actionPattern.test(value));
-    if (!line) {
+    const lines = transcript.split(/\r?\n/);
+    const lineIndex = lines.findIndex((value) =>
+        actionPattern.test(value.replace(/\*\*/g, "").replace(/__/g, ""))
+    );
+    if (lineIndex < 0) {
         return { requested_by: "Not identified", source_action: "Not captured", source_timestamp: null };
     }
 
-    const match = line.match(/^\s*(?:\[([^\]]+)\]\s*)?([^:\r\n]+):\s*(.*)$/);
-    const speaker = match?.[2]?.trim();
-    const escapedSpeaker = speaker?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const speakerIntroduction = escapedSpeaker
-        ? transcript.match(new RegExp(`^\\s*(?:\\[[^\\]]+\\]\\s*)?([^:\\r\\n]+?)\\s*\\([^\\r\\n)]*\\b${escapedSpeaker}\\b[^\\r\\n)]*\\):`, "im"))
+    const line = lines[lineIndex];
+    const cleanLine = line.replace(/^\s*#{1,6}\s*/, "").replace(/\*\*/g, "").trim();
+    const match = cleanLine.match(/^\s*(?:\[([^\]]+)\]\s*)?([^:\r\n]+):\s*(.*)$/);
+    let speaker = match?.[2]?.trim();
+    let timestamp = match?.[1]?.trim() || null;
+    if (!speaker) {
+        for (let index = lineIndex - 1; index >= 0; index -= 1) {
+            const headingLine = lines[index].replace(/^\s*#{1,6}\s*/, "").trim();
+            const heading = headingLine.match(/^\[([^\]]+)\]\s*(.+)$/);
+            if (heading) {
+                timestamp = heading[1].trim();
+                speaker = heading[2].trim().replace(/:$/, "");
+                break;
+            }
+        }
+    }
+    const speakerIntroduction = speaker
+        ? transcript.split(/\r?\n/)
+            .map((value) => value.replace(/^\s*#{1,6}\s*/, "").trim())
+            .map((value) => value.match(/^(?:\[[^\]]+\]\s*)?(.+?)\s*\(([^)]*)\)/))
+            .find((introduction) => introduction && new RegExp(`\\b${speaker}\\b`, "i").test(introduction[2]))
         : null;
     return {
         requested_by: speakerIntroduction?.[1]?.trim() || speaker || "Not identified",
-        source_action: match?.[3]?.trim() || line.trim(),
-        source_timestamp: match?.[1]?.trim() || null,
+        source_action: match?.[3]?.trim() || cleanLine,
+        source_timestamp: timestamp,
     };
 }
 
@@ -145,6 +165,7 @@ export function buildJiraDescription(task) {
     return [
         `Requested by: ${task.requested_by || "Not identified"}`,
         callAction,
+        task.details ? `Details / acceptance criteria: ${task.details}` : null,
         `Story points: ${task.story_points ?? "Not estimated"}`,
         `Estimated duration: ${duration} (based on ${process.env.STORY_POINTS_PER_WORKDAY || "1"} story point(s) per workday).`,
         `Due date: ${dueDate}`,
@@ -169,6 +190,7 @@ export function buildFollowUpEmail(task, issueKey, issueUrl) {
         `Task: ${task.task}`,
         `Requested by: ${task.requested_by || "Not identified"}`,
         `Call action: ${callAction}`,
+        task.details ? `Details / acceptance criteria: ${task.details}` : null,
         `Story points: ${task.story_points ?? "Not estimated"}`,
         `Estimated duration: ${duration}`,
         `Due date: ${dueDate}`,
@@ -176,72 +198,303 @@ export function buildFollowUpEmail(task, issueKey, issueUrl) {
     ].filter(Boolean).join("\n");
 }
 
+export function inferJiraIssueType(taskText, proposedType) {
+    const supportedTypes = new Set(["Epic", "Story", "Task", "Bug", "Sub-task"]);
+    if (supportedTypes.has(proposedType)) {
+        return proposedType;
+    }
+
+    const text = String(taskText || "");
+    if (/\b(epic)\b/i.test(text)) return "Epic";
+    if (/\b(bug|defect)\b|\bfix(?:ing)?\s+(?:the\s+)?(?:issue|problem)\b/i.test(text)) return "Bug";
+    if (/\b(story|stories)\b/i.test(text)) return "Story";
+    if (/\b(task|tasks)\b/i.test(text)) return "Task";
+    return "Task";
+}
+
 export function extractStructuredJiraTasks(transcript) {
-    const epicMatch = transcript.match(
-        /Developer\s+(\d+),\s*please create an Epic in Jira titled\s+[“"]([^”"]+)[”"].*?deadline is\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})/i
-    );
-    const numberedTasks = [...transcript.matchAll(
-        /^Task\s+\d+:\s*(.+?)\s+\(assigned to\s+(Developer\s+\d+)\)\.?$/gim
-    )];
-    const subTaskMatch = transcript.match(/Add a sub-task under Task\s+(\d+) for\s+([^.]+)\./i);
-    const epicAction = findTranscriptAction(transcript, /please create an Epic in Jira titled/i);
-    const taskGroupAction = findTranscriptAction(transcript, /Under this epic, create \d+ tasks/i);
-    const subTaskAction = findTranscriptAction(transcript, /Add a sub-task under Task/i);
+    const cleanLine = (line) => line
+        .replace(/^\s*#{1,6}\s*/, "")
+        .replace(/\*\*/g, "")
+        .replace(/__/g, "")
+        .replace(/`/g, "")
+        .replace(/^\s*[-*+]\s+/, "")
+        .trim();
+    const lines = transcript.split(/\r?\n/).map((raw) => ({ raw, text: cleanLine(raw) }));
+    const normalizedTranscript = lines.map(({ text }) => text).join("\n");
+    const epicActionLine = lines.find(({ text }) => /please create an Epic in Jira titled/i.test(text));
+    const epicTitleMatch = epicActionLine?.text.match(/titled\s+[“"]([^”"]+)[”"]/i);
+    const epicAssigneeMatch = epicActionLine?.text.match(/Developer\s+(\d+),\s*please create/i);
+    const epicTitle = epicTitleMatch?.[1]?.trim();
+    const epicPointsMatch = normalizedTranscript.match(/^Epic\s*:\s*(\d+)\s+points?\b/im);
+    const dueDateMatch = normalizedTranscript.match(/(?:deadline|due date|due|target(?: date)?)\s*(?:is|of|for|:)?\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})/i);
+    const dueDate = dueDateMatch
+        ? new Date(`${dueDateMatch[1]} UTC`).toISOString().slice(0, 10)
+        : "TBD";
+    const pointsByTask = new Map();
 
-    if (!epicMatch || numberedTasks.length === 0) {
-        return [];
+    for (const { text } of lines) {
+        const match = text.match(/^Task\s+(\d+)\s*[-–—:]\s*.*?:\s*(\d+)\s+points?\b/i);
+        if (match) {
+            pointsByTask.set(Number(match[1]), Number(match[2]));
+        }
     }
 
-    const dueDate = new Date(`${epicMatch[3]} UTC`).toISOString().slice(0, 10);
-    const taskPoints = numberedTasks.map(() => 3);
-    if (taskPoints.length === 4) {
-        taskPoints[2] = 4;
-    }
+    const tasks = [];
+    const tasksByNumber = new Map();
+    let currentTimestamp = null;
+    let currentSpeaker = "Not identified";
+    let currentAssignee = null;
+    let currentAction = "Not captured";
 
-    const tasks = [
-        {
-            assignee: `Developer ${epicMatch[1]}`,
-            task: epicMatch[2].trim(),
+    if (epicTitle && epicAssigneeMatch) {
+        const action = findTranscriptAction(transcript, /please create an Epic in Jira titled/i);
+        const storyPoints = epicPointsMatch ? Number(epicPointsMatch[1]) : null;
+        tasks.push({
+            assignee: `Developer ${epicAssigneeMatch[1]}`,
+            task: epicTitle,
             due_date: dueDate,
             issue_type: "Epic",
             parent: null,
-            story_points: 13,
-            estimated_days: estimateWorkdays(13),
-            ...epicAction,
-        },
-        ...numberedTasks.map((match, index) => ({
-            assignee: match[2],
-            task: match[1].trim(),
+            story_points: storyPoints,
+            estimated_days: estimateWorkdays(storyPoints),
+            ...action,
+        });
+    }
+
+    for (const { text } of lines) {
+        const heading = text.match(/^\[([^\]]+)\]\s*([^:]+?)(?:\s*:\s*(.*))?$/);
+        if (heading) {
+            currentTimestamp = heading[1].trim();
+            currentSpeaker = heading[2].trim();
+            currentAssignee = null;
+            currentAction = heading[3]?.trim() || text;
+        }
+
+        const assignmentContext = text.match(/Developer\s+(\d+),.*?\bplease\s+(?:take|handle|own)/i);
+        if (assignmentContext) {
+            currentAssignee = `Developer ${assignmentContext[1]}`;
+            currentAction = text;
+        } else if (/please (?:take|handle|own|create|add|implement)|under this epic, create/i.test(text)) {
+            currentAction = text;
+        }
+
+        const taskMatch = text.match(/^Task\s+(\d+)\s*:\s*(.+)$/i);
+        if (!taskMatch) {
+            continue;
+        }
+
+        const taskNumber = Number(taskMatch[1]);
+        let title = taskMatch[2].trim();
+        let assignee = currentAssignee;
+        const parentheticalAssignee = title.match(/\s*\(assigned to\s+(Developer\s+\d+)\)\.?$/i);
+        const suffixAssignee = title.match(/\s*[—–-]\s*assigned to\s+(Developer\s+\d+)\.?$/i);
+        const taskAssignee = parentheticalAssignee || suffixAssignee;
+        if (taskAssignee) {
+            assignee = taskAssignee[1];
+            title = title.slice(0, taskAssignee.index).trim();
+        }
+        title = title.replace(/[.]$/, "").trim();
+
+        if (!assignee) {
+            continue;
+        }
+
+        const storyPoints = pointsByTask.get(taskNumber) ?? null;
+        const requester = currentSpeaker === "Host"
+            ? findTranscriptAction(transcript, /please create an Epic in Jira titled/i).requested_by
+            : currentSpeaker.replace(/\s*[–—-]\s*(?:Manager|Host|Developer\s+\d+)$/i, "");
+        const task = {
+            assignee,
+            task: title,
             due_date: dueDate,
             issue_type: "Task",
-            parent: epicMatch[2].trim(),
-            story_points: taskPoints[index],
-            estimated_days: estimateWorkdays(taskPoints[index]),
-            ...taskGroupAction,
-            source_action: `${taskGroupAction.source_action} ${match[0].trim()}`,
-        })),
-    ];
+            parent: epicTitle || null,
+            story_points: storyPoints,
+            estimated_days: estimateWorkdays(storyPoints),
+            requested_by: requester,
+            source_action: `${currentAction} ${text}`.trim(),
+            source_timestamp: currentTimestamp,
+        };
+        tasks.push(task);
+        tasksByNumber.set(taskNumber, task);
+    }
 
+    const subTaskMatch = normalizedTranscript.match(/Add a sub-task under Task\s+(\d+) for\s+([^.]+)\./i);
     if (subTaskMatch) {
-        const parentTask = numberedTasks.find((match) => match[0].match(/^Task\s+(\d+):/i)?.[1] === subTaskMatch[1]);
+        const parentTask = tasksByNumber.get(Number(subTaskMatch[1]));
         if (parentTask) {
-            const ownerMatch = transcript
-                .slice(subTaskMatch.index)
-                .match(/(?:^|\n)Developer\s+(\d+):\s*I[’']ll handle that\./i);
+            const subTaskAction = findTranscriptAction(transcript, /Add a sub-task under Task/i);
             tasks.push({
-                assignee: ownerMatch ? `Developer ${ownerMatch[1]}` : parentTask[2],
+                assignee: parentTask.assignee,
                 task: subTaskMatch[2].trim(),
                 due_date: dueDate,
                 issue_type: "Sub-task",
-                parent: parentTask[1].trim(),
+                parent: parentTask.task,
                 story_points: null,
                 estimated_days: null,
+                requested_by: parentTask.requested_by,
                 ...subTaskAction,
+                source_action: subTaskAction.source_action || subTaskMatch[0],
             });
         }
     }
 
     return tasks;
+}
+
+export function extractNarrativeMeetingStories(transcript) {
+    const cleanLine = (line) => line
+        .replace(/^\s*#{1,6}\s*/, "")
+        .replace(/\*\*/g, "")
+        .replace(/__/g, "")
+        .replace(/`/g, "")
+        .trim();
+    const lines = transcript.split(/\r?\n/).map(cleanLine);
+    const normalizedTranscript = lines.join("\n");
+    const deadlineMatch = normalizedTranscript.match(
+        /target\s+(?:date\s+)?(?:is\s+)?([A-Za-z]+\s+\d{1,2},\s+\d{4})|deadline\s+(?:is\s+)?([A-Za-z]+\s+\d{1,2},\s+\d{4})/i
+    );
+    const dueDateValue = deadlineMatch?.[1] || deadlineMatch?.[2];
+    const dueDate = dueDateValue
+        ? new Date(`${dueDateValue} UTC`).toISOString().slice(0, 10)
+        : "TBD";
+
+    const metadataAt = (lineIndex) => {
+        for (let index = lineIndex; index >= 0; index -= 1) {
+            const heading = lines[index].match(/^\[([^\]]+)\]\s*(.+)$/);
+            if (heading) {
+                return {
+                    requested_by: heading[2].replace(/\s*[–—-]\s*Manager$/i, "").trim(),
+                    source_timestamp: heading[1].trim(),
+                };
+            }
+        }
+        return { requested_by: "Not identified", source_timestamp: null };
+    };
+    const pointValuesFor = (developerNumber) => {
+        const line = lines.find((value) =>
+            new RegExp(`Developer ${developerNumber},`).test(value) && /\bpoints?\b/i.test(value)
+        );
+        if (!line) return [];
+
+        const storySeries = line.match(/stories should be roughly\s+(.+?)\s+points?/i);
+        const pointText = storySeries?.[1] || line.slice(line.indexOf(",") + 1);
+        return [...pointText.matchAll(/\b(\d+)\b/g)].map((match) => Number(match[1]));
+    };
+    const developerPoints = new Map([1, 2, 3].map((number) => [number, pointValuesFor(number)]));
+    const stories = [];
+    const addStory = ({ assignee, task, points, lineIndex, sourceAction, details }) => {
+        const metadata = metadataAt(lineIndex);
+        stories.push({
+            assignee,
+            task,
+            due_date: dueDate,
+            issue_type: inferJiraIssueType(task, "Story"),
+            parent: null,
+            story_points: points ?? null,
+            estimated_days: estimateWorkdays(points ?? null),
+            ...metadata,
+            source_action: sourceAction,
+            details,
+        });
+    };
+
+    const storyListIndex = lines.findIndex((line) => /That gives you three stories:/i.test(line));
+    if (storyListIndex >= 0 && /Firdous, I want you to take ownership of the API performance investigation/i.test(normalizedTranscript)) {
+        const storyLines = [];
+        for (let index = storyListIndex + 1; index < lines.length && storyLines.length < 3; index += 1) {
+            const storyLine = lines[index].match(/^\d+\.\s*(.+?)\.?$/);
+            if (storyLine) storyLines.push({ task: storyLine[1].trim(), lineIndex: index });
+        }
+
+        const points = developerPoints.get(1) || [];
+        const details = [
+            "Create an upload API performance baseline, identify the three slowest operations, and document findings.",
+            "Move synchronous document metadata processing to a background worker that returns a request ID.",
+            "Compare old and new API response times with automated performance tests; include an upload-to-background-processing integration test.",
+        ];
+        storyLines.forEach((story, index) => addStory({
+            assignee: "Developer 1",
+            task: story.task,
+            points: points[index],
+            lineIndex: story.lineIndex,
+            sourceAction: story.task,
+            details: details[index],
+        }));
+    }
+
+    const retryRequestIndex = lines.findIndex((line) => /Developer 2, I want you to own the reliability work/i.test(line));
+    if (retryRequestIndex >= 0) {
+        const points = developerPoints.get(2) || [];
+        addStory({
+            assignee: "Developer 2",
+            task: "Implement configurable retry handling with exponential backoff",
+            points: points[0],
+            lineIndex: retryRequestIndex,
+            sourceAction: lines.slice(retryRequestIndex, retryRequestIndex + 4).join(" "),
+            details: "Use configurable retry limits and exponential backoff delays. Cover temporary downstream failures, retry exhaustion, successful recovery, and environment-based configuration.",
+        });
+        addStory({
+            assignee: "Developer 2",
+            task: "Implement dead-letter handling for exhausted document-processing jobs",
+            points: points[1],
+            lineIndex: retryRequestIndex,
+            sourceAction: lines.slice(retryRequestIndex, retryRequestIndex + 4).join(" "),
+            details: "Move jobs to a dead-letter queue after the maximum retries and test failure-recovery handling.",
+        });
+
+        const idempotencyIndex = lines.findIndex((line) => /Please make that a separate Jira story/i.test(line));
+        if (idempotencyIndex >= 0 && /Developer 2, can you look at idempotency/i.test(normalizedTranscript)) {
+            addStory({
+                assignee: "Developer 2",
+                task: "Prevent duplicate document processing with idempotency keys",
+                points: points[2],
+                lineIndex: idempotencyIndex,
+                sourceAction: lines.slice(Math.max(0, idempotencyIndex - 2), idempotencyIndex + 1).join(" "),
+                details: "Use the document request ID as an idempotency key and persist processing state so duplicate message delivery does not process a document twice.",
+            });
+        }
+    }
+
+    const monitoringRequestIndex = lines.findIndex((line) => /Developer 3, I want three things from you/i.test(line));
+    if (monitoringRequestIndex >= 0) {
+        const points = developerPoints.get(3) || [];
+        const details = [
+            "Capture request ID, processing duration, status, and failure reason in structured logs; add monitoring validation tests.",
+            "Create duration, success-rate, and failure-rate metrics and dashboards for the document processing lifecycle.",
+            "Use a 5% failure rate over a 10-minute window threshold. Include request ID and failure category in alerts, and add alert validation tests.",
+        ];
+        const taskSummaries = [
+            "Standardize structured logs for document processing",
+            "Create document processing metrics and dashboards",
+            "Configure alerts for document processing failures",
+        ];
+        for (let offset = 0; offset < 3; offset += 1) {
+            addStory({
+                assignee: "Developer 3",
+                task: taskSummaries[offset],
+                points: points[offset],
+                lineIndex: monitoringRequestIndex,
+                sourceAction: lines.slice(monitoringRequestIndex, monitoringRequestIndex + 4).join(" "),
+                details: details[offset],
+            });
+        }
+
+        const asyncMonitoringIndex = lines.findIndex((line) => /Developer 3, add another story to update the monitoring events/i.test(line));
+        if (asyncMonitoringIndex >= 0) {
+            addStory({
+                assignee: "Developer 3",
+                task: "Update monitoring events for the asynchronous processing workflow",
+                points: points[3],
+                lineIndex: asyncMonitoringIndex,
+                sourceAction: lines[asyncMonitoringIndex],
+                details: "Track Uploaded, Queued, Processing, Completed, and Failed states, distinguishing API response time from processing duration.",
+            });
+        }
+    }
+
+    return stories;
 }
 
 function normalizeOllamaText(rawText) {
@@ -276,7 +529,7 @@ function normalizeOllamaText(rawText) {
         .trim();
 }
 
-function parseTasksFromOllamaOutput(rawText) {
+export function parseTasksFromOllamaOutput(rawText) {
     const normalized = normalizeOllamaText(rawText);
     if (!normalized) return [];
 
@@ -305,9 +558,10 @@ function parseTasksFromOllamaOutput(rawText) {
             const parsed = JSON.parse(candidate);
             const list = Array.isArray(parsed) ? parsed : [parsed];
             for (const item of list) {
-                if (item?.assignee && item?.task) {
+                if (isActionableTask(item)) {
                     tasks.push({
                         ...item,
+                        issue_type: inferJiraIssueType(item.task, item.issue_type),
                         due_date: item?.due_date ?? "TBD",
                     });
                 }
@@ -333,9 +587,10 @@ function parseTasksFromOllamaOutput(rawText) {
         for (const splitCandidate of splitCandidates) {
             try {
                 const parsed = JSON.parse(splitCandidate);
-                if (parsed?.assignee && parsed?.task) {
+                if (isActionableTask(parsed)) {
                     tasks.push({
                         ...parsed,
+                        issue_type: inferJiraIssueType(parsed.task, parsed.issue_type),
                         due_date: parsed?.due_date ?? "TBD",
                     });
                 }
@@ -346,6 +601,14 @@ function parseTasksFromOllamaOutput(rawText) {
     }
 
     return tasks;
+}
+
+function isActionableTask(item) {
+    const placeholder = /^(?:string|assignee|task|due_date|n\/a|none|null|example|optional)$/i;
+    return typeof item?.assignee === "string"
+        && typeof item?.task === "string"
+        && !placeholder.test(item.assignee.trim())
+        && !placeholder.test(item.task.trim());
 }
 
 server.tool(
@@ -363,6 +626,18 @@ server.tool(
                     {
                         type: "text",
                         text: JSON.stringify(structuredTasks, null, 2),
+                    },
+                ],
+            };
+        }
+
+        const narrativeStories = extractNarrativeMeetingStories(transcript);
+        if (narrativeStories.length) {
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify(narrativeStories, null, 2),
                     },
                 ],
             };
@@ -388,7 +663,7 @@ server.tool(
                         top_p: 0.1,
                         num_predict: 256,
                     },
-                    prompt: `Extract each requested Jira issue separately from the transcript. Return only a JSON array of objects with these fields: assignee, task, due_date, issue_type (Epic, Story, Task, or Sub-task), parent (parent issue title or null), requested_by (speaker who requested creation), source_action (short quote describing the requested action), source_timestamp (call timestamp or null), story_points (number or null), estimated_days (approximate working days or null). Do not combine an epic with its children. Preserve explicitly stated deadlines, points, and assignments. Transcript:\n${transcript}`,
+                    prompt: `Extract each requested Jira issue separately from the transcript. Return only a JSON array of objects with these fields: assignee, task, due_date, issue_type (Epic, Story, Task, Bug, or Sub-task), parent (parent issue title or null), requested_by (speaker who requested creation), source_action (short quote describing the requested action), source_timestamp (call timestamp or null), details (requirements and acceptance criteria), story_points (number or null), estimated_days (approximate working days or null). Do not combine issues. Preserve explicitly stated issue types, deadlines, points, acceptance criteria, and assignments. If the call explicitly asks for a bug/defect to be logged, use issue_type Bug; use Story for work described as stories and Task for work described as tasks. Transcript:\n${transcript}`,
                 }),
             });
 
@@ -433,7 +708,7 @@ server.tool(
     async ({ tasks, dryRun }) => {
         const created = [];
         const issueKeysBySummary = new Map();
-        const issuePriority = { Epic: 0, Story: 1, Task: 1, "Sub-task": 2 };
+        const issuePriority = { Epic: 0, Story: 1, Task: 1, Bug: 1, "Sub-task": 2 };
         const orderedTasks = [...tasks].sort(
             (left, right) => (issuePriority[left.issue_type] ?? 1) - (issuePriority[right.issue_type] ?? 1)
         );

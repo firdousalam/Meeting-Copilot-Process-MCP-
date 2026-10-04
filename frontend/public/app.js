@@ -77,7 +77,7 @@ generateBtn.addEventListener('click', async () => {
     const tasks = extractedItems.filter((item) =>
         item && typeof item.assignee === 'string' && typeof item.task === 'string' &&
         typeof item.due_date === 'string' &&
-        (!item.issue_type || ['Epic', 'Story', 'Task', 'Sub-task'].includes(item.issue_type))
+        (!item.issue_type || ['Epic', 'Story', 'Task', 'Bug', 'Sub-task'].includes(item.issue_type))
     );
 
     if (tasks.length === 0) {

@@ -37,6 +37,10 @@ async function callMcpTool(toolName, args) {
 
         const textContent = result?.content?.[0]?.text ?? JSON.stringify(result);
         console.log(`MCP tool result for ${toolName}:`, textContent);
+        if (result?.isError) {
+            return { ok: false, error: textContent };
+        }
+
         try {
             return { ok: true, data: JSON.parse(textContent) };
         } catch {
