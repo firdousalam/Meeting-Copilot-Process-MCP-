@@ -1,32 +1,32 @@
 {
-  "name": "meeting-copilot-mcp",
-  "displayName": "Meeting Copilot MCP",
-  "description": "Starter VS Code extension wrapper for the Meeting Copilot MCP server.",
-  "version": "0.1.0",
-  "publisher": "yourpublishername",
-  "engines": {
-    "vscode": "^1.90.0"
-  },
-  "categories": [
-    "Other"
-  ],
-  "activationEvents": [
-    "onCommand:meetingCopilot.start"
-  ],
-  "main": "./extension.js",
-  "private": true,
-  "contributes": {
-    "commands": [
-      {
-        "command": "meetingCopilot.start",
-        "title": "Meeting Copilot: Start MCP Server"
-      }
-    ]
-  },
-  "scripts": {
-    "package": "vsce package"
-  },
-  "devDependencies": {
-    "@vscode/vsce": "^3.6.0"
-  }
+    "name": "meeting-copilot-mcp",
+    "displayName": "Meeting Copilot MCP",
+    "description": "Starter VS Code extension wrapper for the Meeting Copilot MCP server.",
+    "version": "0.1.0",
+    "publisher": "yourpublishername",
+    "engines": {
+        "vscode": "^1.90.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [
+        "onCommand:meetingCopilot.start"
+    ],
+    "main": "./extension.js",
+    "private": true,
+    "contributes": {
+        "commands": [
+            {
+                "command": "meetingCopilot.start",
+                "title": "Meeting Copilot: Start MCP Server"
+            }
+        ]
+    },
+    "scripts": {
+        "package": "vsce package"
+    },
+    "devDependencies": {
+        "@vscode/vsce": "^3.6.0"
+    }
 }

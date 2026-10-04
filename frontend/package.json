@@ -1,13 +1,13 @@
 {
-  "name": "meeting-copilot-frontend",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.13.3",
-    "express": "^4.19.2"
-  }
+    "name": "meeting-copilot-frontend",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "start": "node server.js"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.13.3",
+        "express": "^4.19.2"
+    }
 }
