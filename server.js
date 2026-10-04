@@ -26,9 +26,19 @@ const transporter = nodemailer.createTransport({
     requireTLS: true,
 });
 
+export function normalizeJiraHost(jiraHost) {
+    if (!jiraHost) return jiraHost;
+    const value = jiraHost.trim();
+    try {
+        return new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`).hostname;
+    } catch {
+        return value.replace(/^https?:\/\//i, "").split("/")[0];
+    }
+}
+
 const jira = new JiraClient({
     protocol: "https",
-    host: process.env.JIRA_HOST,
+    host: normalizeJiraHost(process.env.JIRA_HOST),
     username: process.env.JIRA_USER,
     password: process.env.JIRA_PASS,
     apiVersion: "2",
@@ -149,6 +159,80 @@ export function buildJiraIssueUrl(jiraHost, issueKey) {
     const host = jiraHost.trim().replace(/\/+$/, "");
     const baseUrl = /^https?:\/\//i.test(host) ? host : `https://${host}`;
     return `${baseUrl}/browse/${encodeURIComponent(issueKey)}`;
+}
+
+export function formatJiraError(error) {
+    let details = error;
+    if (error instanceof Error) {
+        try {
+            details = JSON.parse(error.message);
+        } catch {
+            return error.message || "Unknown Jira error";
+        }
+    }
+
+    if (details && typeof details === "object") {
+        const messages = [
+            ...(Array.isArray(details.errorMessages) ? details.errorMessages : []),
+            ...Object.entries(details.errors || {}).map(([field, message]) => `${field}: ${message}`),
+        ];
+        if (messages.length) return messages.join("; ");
+        if (details.message) return String(details.message);
+        return "Jira rejected issue creation without details. Check issue type availability, assignee identifier, required fields, and custom-field IDs.";
+    }
+
+    return String(details || "Unknown Jira error");
+}
+
+function isJiraCloudHost(jiraHost) {
+    if (!jiraHost) return false;
+    try {
+        const url = new URL(/^https?:\/\//i.test(jiraHost) ? jiraHost : `https://${jiraHost}`);
+        return url.hostname.toLowerCase().endsWith(".atlassian.net");
+    } catch {
+        return false;
+    }
+}
+
+export function buildJiraAssignee(participant, jiraHost, accountId) {
+    const resolvedAccountId = accountId || participant.jira_account_id;
+    if (resolvedAccountId) {
+        return { accountId: resolvedAccountId };
+    }
+    if (isJiraCloudHost(jiraHost)) {
+        throw new Error("Jira Cloud assignees require an accountId; verify the participant email mapping or set jira_account_id.");
+    }
+    if (!participant.jira_user) {
+        throw new Error("Jira username is not configured for this participant.");
+    }
+    return { name: participant.jira_user };
+}
+
+const jiraAccountIdsByEmail = new Map();
+
+async function resolveJiraAssignee(participant) {
+    const jiraHost = process.env.JIRA_HOST;
+    if (!isJiraCloudHost(jiraHost) || participant.jira_account_id) {
+        return buildJiraAssignee(participant, jiraHost);
+    }
+    if (!participant.email) {
+        throw new Error("Participant email is required to resolve a Jira Cloud accountId.");
+    }
+
+    const email = participant.email.toLowerCase();
+    let accountId = jiraAccountIdsByEmail.get(email);
+    if (!accountId) {
+        const matches = await jira.searchUsers({ query: participant.email, maxResults: 10 });
+        const exactMatch = matches.find((user) => user.emailAddress?.toLowerCase() === email);
+        const uniqueMatch = exactMatch || (matches.length === 1 ? matches[0] : null);
+        accountId = uniqueMatch?.accountId;
+        if (!accountId) {
+            throw new Error(`Could not resolve one Jira Cloud account for ${participant.email}; add jira_account_id to participants.json.`);
+        }
+        jiraAccountIdsByEmail.set(email, accountId);
+    }
+
+    return buildJiraAssignee(participant, jiraHost, accountId);
 }
 
 export function buildJiraDescription(task) {
@@ -713,6 +797,7 @@ server.tool(
             (left, right) => (issuePriority[left.issue_type] ?? 1) - (issuePriority[right.issue_type] ?? 1)
         );
 
+        console.log(`Creating ${orderedTasks.length} Jira issues (dryRun=${dryRun})...`);
         for (const task of orderedTasks) {
             const participant = participants[task.assignee];
 
@@ -757,8 +842,8 @@ server.tool(
                     fields.duedate = formatJiraDate(task.due_date);
                 }
 
-                if (typeof task.story_points === "number") {
-                    fields[process.env.JIRA_STORY_POINTS_FIELD || "customfield_10016"] = task.story_points;
+                if (typeof task.story_points === "number" && process.env.JIRA_STORY_POINTS_FIELD) {
+                    fields[process.env.JIRA_STORY_POINTS_FIELD] = task.story_points;
                 }
 
                 if (issueType === "Epic") {
@@ -768,8 +853,9 @@ server.tool(
                 } else if (parentKey) {
                     fields[process.env.JIRA_EPIC_LINK_FIELD || "customfield_10014"] = parentKey;
                 }
-
+                console.log(`Creating Jira issue for task: ${task.task} (assignee: ${task.assignee}, type: ${issueType})`);
                 try {
+                    fields.assignee = await resolveJiraAssignee(participant);
                     const jiraIssue = await jira.addNewIssue({ fields });
                     issueKey = jiraIssue?.key || null;
                     if (issueKey) {
@@ -782,7 +868,7 @@ server.tool(
                         task: task.task,
                         issueType,
                         status: "jira-failed",
-                        error: error instanceof Error ? error.message : "Unknown Jira error",
+                        error: formatJiraError(error),
                     });
                     continue;
                 }

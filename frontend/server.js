@@ -33,7 +33,9 @@ async function callMcpTool(toolName, args) {
         const result = await client.callTool({
             name: toolName,
             arguments: args,
-        });
+        }, undefined, toolName === 'create_follow_up_tasks'
+            ? { timeout: Number.parseInt(process.env.MCP_CREATE_TIMEOUT_MS || '300000', 10) }
+            : undefined);
 
         const textContent = result?.content?.[0]?.text ?? JSON.stringify(result);
         console.log(`MCP tool result for ${toolName}:`, textContent);
@@ -61,6 +63,16 @@ app.get('/api/health', async (_req, res) => {
     if (!result.ok) {
         return res.status(500).json({ success: false, error: result.error });
     }
+
+    const outcomes = result.data?.created;
+    if (Array.isArray(outcomes) && outcomes.length > 0 && outcomes.every((item) => item.status === 'jira-failed')) {
+        return res.status(502).json({
+            success: false,
+            error: 'Jira rejected every issue. Review the per-issue errors below.',
+            data: result.data,
+        });
+    }
+
     res.json({ success: true, data: result.data });
 });
 
@@ -90,7 +102,7 @@ app.post('/api/create-follow-ups', async (req, res) => {
     if (!Array.isArray(tasks) || tasks.length === 0) {
         return res.status(400).json({ success: false, error: 'Tasks array is required.' });
     }
-
+    console.log(`Received ${tasks.length} tasks for follow-up creation.`);
     const result = await callMcpTool('create_follow_up_tasks', {
         tasks,
         dryRun: Boolean(req.body?.dryRun),

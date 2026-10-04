@@ -88,17 +88,27 @@ generateBtn.addEventListener('click', async () => {
 
     FollowUpOutput.textContent = `Creating ${tasks.length} Jira issue(s) and sending follow-up emails...`;
     FollowUpCard.classList.remove('hidden');
+    const originalButtonText = generateBtn.textContent;
+    generateBtn.disabled = true;
+    generateBtn.textContent = `Creating ${tasks.length} issues...`;
 
     try {
         const { response, data } = await callApi('/api/create-follow-ups', { tasks });
 
         if (!response.ok) {
-            throw new Error(data.error || 'create-follow-ups failed');
+            FollowUpOutput.textContent = JSON.stringify({
+                error: data.error || 'create-follow-ups failed',
+                data: data.data,
+            }, null, 2);
+            return;
         }
 
         FollowUpOutput.textContent = JSON.stringify(data.data, null, 2);
     } catch (error) {
         FollowUpOutput.textContent = `Error: ${error.message}`;
+    } finally {
+        generateBtn.disabled = false;
+        generateBtn.textContent = originalButtonText;
     }
 });
 

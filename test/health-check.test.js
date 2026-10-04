@@ -8,8 +8,11 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import {
     extractNarrativeMeetingStories,
     extractStructuredJiraTasks,
+    buildJiraAssignee,
+    formatJiraError,
     inferJiraIssueType,
     parseTasksFromOllamaOutput,
+    normalizeJiraHost,
     resolveOllamaHealthUrl,
     resolveOllamaModel,
 } from '../server.js';
@@ -105,6 +108,31 @@ test('inferJiraIssueType supports Epic, Story, Task, and Bug records', () => {
     assert.equal(inferJiraIssueType('Update retry configuration', 'Task'), 'Task');
     assert.equal(inferJiraIssueType('Log the confirmed upload defect'), 'Bug');
     assert.equal(inferJiraIssueType('Implement a bug triage workflow', 'Story'), 'Story');
+});
+
+test('buildJiraAssignee uses account IDs for Cloud and usernames for Data Center', () => {
+    assert.deepEqual(
+        buildJiraAssignee({ jira_user: 'legacy-name' }, 'example.atlassian.net', 'account-123'),
+        { accountId: 'account-123' }
+    );
+    assert.throws(
+        () => buildJiraAssignee({ jira_user: 'legacy-name' }, 'example.atlassian.net'),
+        /accountId/
+    );
+    assert.deepEqual(
+        buildJiraAssignee({ jira_user: 'legacy-name' }, 'jira.example.com'),
+        { name: 'legacy-name' }
+    );
+});
+
+test('normalizeJiraHost accepts a full Jira URL or a bare hostname', () => {
+    assert.equal(normalizeJiraHost('https://technophilefirdous.atlassian.net/'), 'technophilefirdous.atlassian.net');
+    assert.equal(normalizeJiraHost('technophilefirdous.atlassian.net'), 'technophilefirdous.atlassian.net');
+});
+
+test('formatJiraError preserves field validation details wrapped by jira-client', () => {
+    const error = new Error(JSON.stringify({ errors: { assignee: 'Account ID is required' } }));
+    assert.equal(formatJiraError(error), 'assignee: Account ID is required');
 });
 
 test('extractStructuredJiraTasks returns the epic and each numbered child task separately', () => {
