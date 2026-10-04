@@ -1,0 +1,11 @@
+{
+    "servers": {
+        "meeting-copilot": {
+            "type": "stdio",
+            "command": "node",
+            "args": [
+                "C:\\Users\\techn\\TechnophileFirdous\\Meeting-Copilot-Process-MCP-\\server.js"
+            ]
+        }
+    }
+}
